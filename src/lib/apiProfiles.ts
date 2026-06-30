@@ -16,6 +16,7 @@ import type {
 } from '../types'
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, DEFAULT_ZIP_DOWNLOAD_ROUTES, ZIP_DOWNLOAD_ROUTE_VALUES } from '../types'
 import { shouldUseApiProxy } from './devProxy'
+import { parseDefaultApiUrl } from './defaultApiUrl'
 import { readRuntimeEnv } from './runtimeEnv'
 import { isImportableConfigUrl } from './customProviderConfigUrl'
 
@@ -24,9 +25,10 @@ const RAW_DEFAULT_API_URL = readRuntimeEnv(import.meta.env.VITE_DEFAULT_API_URL)
 const DEFAULT_OPENAI_API_PROXY = readRuntimeEnv(import.meta.env.VITE_API_PROXY_AVAILABLE) === 'true'
 const DOCKER_DEPLOYMENT = readRuntimeEnv(import.meta.env.VITE_DOCKER_DEPLOYMENT) === 'true'
 const SHOW_DEFAULT_CONFIG_ONLY = readRuntimeEnv(import.meta.env.VITE_SHOW_DEFAULT_CONFIG_ONLY) === 'true'
-const DEFAULT_BASE_URL = isImportableConfigUrl(RAW_DEFAULT_API_URL)
-  ? ''
-  : RAW_DEFAULT_API_URL || (DOCKER_DEPLOYMENT && DEFAULT_OPENAI_API_PROXY ? '' : OPENAI_DEFAULT_BASE_URL)
+const DEFAULT_API_URL_PATCH = isImportableConfigUrl(RAW_DEFAULT_API_URL)
+  ? null
+  : parseDefaultApiUrl(RAW_DEFAULT_API_URL || (DOCKER_DEPLOYMENT && DEFAULT_OPENAI_API_PROXY ? '' : OPENAI_DEFAULT_BASE_URL))
+const DEFAULT_BASE_URL = DEFAULT_API_URL_PATCH?.baseUrl ?? ''
 export const DEFAULT_IMAGES_MODEL = 'gpt-image-2'
 export const DEFAULT_RESPONSES_MODEL = 'gpt-5.5'
 export const DEFAULT_FAL_BASE_URL = 'https://fal.run'
@@ -319,20 +321,20 @@ export function normalizeCustomProviderDefinitions(input: unknown): CustomProvid
 }
 
 export function createDefaultOpenAIProfile(overrides: Partial<ApiProfile> = {}): ApiProfile {
-  const apiMode = overrides.apiMode ?? 'images'
-  const streamImages = overrides.streamImages ?? getDefaultStreamImages('openai', apiMode)
+  const apiMode = overrides.apiMode ?? DEFAULT_API_URL_PATCH?.apiMode ?? 'images'
+  const streamImages = overrides.streamImages ?? DEFAULT_API_URL_PATCH?.streamImages ?? getDefaultStreamImages('openai', apiMode)
 
   return {
     id: DEFAULT_OPENAI_PROFILE_ID,
-    name: '默认',
+    name: DEFAULT_API_URL_PATCH?.name ?? '默认',
     provider: 'openai',
     baseUrl: DEFAULT_BASE_URL,
-    apiKey: '',
-    model: DEFAULT_IMAGES_MODEL,
+    apiKey: DEFAULT_API_URL_PATCH?.apiKey ?? '',
+    model: DEFAULT_API_URL_PATCH?.model ?? DEFAULT_IMAGES_MODEL,
     timeout: DEFAULT_API_TIMEOUT,
-    codexCli: false,
+    codexCli: DEFAULT_API_URL_PATCH?.codexCli ?? false,
     apiProxy: DEFAULT_OPENAI_API_PROXY,
-    streamPartialImages: DEFAULT_STREAM_PARTIAL_IMAGES,
+    streamPartialImages: DEFAULT_API_URL_PATCH?.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES,
     ...overrides,
     apiMode,
     streamImages,
@@ -850,14 +852,14 @@ export function mergeImportedSettings(currentSettings: Partial<AppSettings> | un
 
 export const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   baseUrl: DEFAULT_BASE_URL,
-  apiKey: '',
-  model: DEFAULT_IMAGES_MODEL,
+  apiKey: DEFAULT_API_URL_PATCH?.apiKey ?? '',
+  model: DEFAULT_API_URL_PATCH?.model ?? DEFAULT_IMAGES_MODEL,
   timeout: DEFAULT_API_TIMEOUT,
-  apiMode: 'images',
-  codexCli: false,
+  apiMode: DEFAULT_API_URL_PATCH?.apiMode ?? 'images',
+  codexCli: DEFAULT_API_URL_PATCH?.codexCli ?? false,
   apiProxy: DEFAULT_OPENAI_API_PROXY,
-  streamImages: false,
-  streamPartialImages: DEFAULT_STREAM_PARTIAL_IMAGES,
+  streamImages: DEFAULT_API_URL_PATCH?.streamImages ?? false,
+  streamPartialImages: DEFAULT_API_URL_PATCH?.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES,
   customProviders: [],
   clearInputAfterSubmit: false,
   persistInputOnRestart: true,
