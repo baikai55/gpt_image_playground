@@ -38,6 +38,7 @@ import ViewportTooltip from './ViewportTooltip'
 import { ChevronDownIcon, CloseIcon, CopyIcon, PlusIcon, TrashIcon, GithubIcon, ExportIcon, ImportIcon, DragHandleIcon, LinkIcon } from './icons'
 import GeneralSettingsTab from './settings/GeneralSettingsTab'
 import AgentSettingsTab from './settings/AgentSettingsTab'
+import ModelPicker from './settings/ModelPicker'
 
 function newId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
@@ -101,11 +102,17 @@ function saveCopyImportUrlOptions(options: CopyImportUrlOptions) {
 }
 
 interface CustomProviderForm {
+  name: string
+  baseUrl: string
+  apiKey: string
+  apiMode: AppSettings['apiMode']
+  model: string
+  availableModels?: string[]
+  availableModelsFetchedAt?: number
   json: string
 }
 
 const DEFAULT_CUSTOM_PROVIDER_MANIFEST = {
-  name: '自定义服务商',
   submit: {
     path: 'images/generations',
     method: 'POST',
@@ -152,14 +159,25 @@ const DEFAULT_CUSTOM_PROVIDER_MANIFEST = {
 
 function createDefaultCustomProviderForm(): CustomProviderForm {
   return {
+    name: '',
+    baseUrl: DEFAULT_SETTINGS.baseUrl,
+    apiKey: '',
+    apiMode: 'images',
+    model: DEFAULT_IMAGES_MODEL,
     json: JSON.stringify(DEFAULT_CUSTOM_PROVIDER_MANIFEST, null, 2),
   }
 }
 
-function customProviderToForm(provider: CustomProviderDefinition): CustomProviderForm {
+function customProviderToForm(provider: CustomProviderDefinition, profile?: ApiProfile): CustomProviderForm {
   return {
+    name: provider.name,
+    baseUrl: profile?.baseUrl ?? DEFAULT_SETTINGS.baseUrl,
+    apiKey: profile?.apiKey ?? '',
+    apiMode: 'images',
+    model: profile?.model ?? DEFAULT_IMAGES_MODEL,
+    availableModels: profile?.availableModels,
+    availableModelsFetchedAt: profile?.availableModelsFetchedAt,
     json: JSON.stringify({
-      name: provider.name,
       submit: provider.submit,
       editSubmit: provider.editSubmit,
       poll: provider.poll,
@@ -168,7 +186,10 @@ function customProviderToForm(provider: CustomProviderDefinition): CustomProvide
 }
 
 function customProviderFormToInput(form: CustomProviderForm) {
-  return JSON.parse(form.json)
+  return {
+    ...JSON.parse(form.json),
+    name: form.name.trim() || 'OpenAI 兼容服务商',
+  }
 }
 
 function isPristineNewOpenAIProfile(profile: ApiProfile) {
@@ -182,6 +203,7 @@ function isPristineNewOpenAIProfile(profile: ApiProfile) {
     profile.apiMode === 'images' &&
     profile.codexCli === false &&
     profile.apiProxy === defaultProfile.apiProxy &&
+    (profile.requestMode ?? 'auto') === (defaultProfile.requestMode ?? 'auto') &&
     profile.streamImages === defaultProfile.streamImages &&
     profile.streamPartialImages === defaultProfile.streamPartialImages
 }
@@ -314,7 +336,6 @@ export default function SettingsModal() {
 
   const profileImportUrlTooltipTimerRef = useRef<number | null>(null)
   const duplicateProfileTooltipTimerRef = useRef<number | null>(null)
-  const llmPromptTooltipTimerRef = useRef<number | null>(null)
   const settingsScrollBoundaryRef = useRef<HTMLDivElement>(null)
   const customProviderScrollBoundaryRef = useRef<HTMLDivElement>(null)
   const zipDownloadRouteScrollBoundaryRef = useRef<HTMLDivElement>(null)
@@ -326,6 +347,8 @@ export default function SettingsModal() {
   const [showProfileMenu, setShowProfileMenu] = useState(false)
   const [profileMenuMaxHeight, setProfileMenuMaxHeight] = useState(DEFAULT_DROPDOWN_MAX_HEIGHT)
   const [showCustomProviderImport, setShowCustomProviderImport] = useState(false)
+  const [showAdvancedCustomProvider, setShowAdvancedCustomProvider] = useState(false)
+  const [showCustomProviderApiKey, setShowCustomProviderApiKey] = useState(false)
   const [showZipDownloadRouteManager, setShowZipDownloadRouteManager] = useState(false)
   const [editingCustomProviderId, setEditingCustomProviderId] = useState<string | null>(null)
   const [customProviderForm, setCustomProviderForm] = useState<CustomProviderForm>(createDefaultCustomProviderForm())
@@ -406,6 +429,17 @@ export default function SettingsModal() {
 
   const getDefaultModelForMode = (apiMode: AppSettings['apiMode']) =>
     apiMode === 'responses' ? DEFAULT_RESPONSES_MODEL : DEFAULT_IMAGES_MODEL
+
+  const customProviderModelProfile = createDefaultOpenAIProfile({
+    id: 'custom-provider-form',
+    name: customProviderForm.name,
+    baseUrl: customProviderForm.baseUrl,
+    apiKey: customProviderForm.apiKey,
+    apiMode: customProviderForm.apiMode,
+    model: customProviderForm.model,
+    availableModels: customProviderForm.availableModels,
+    availableModelsFetchedAt: customProviderForm.availableModelsFetchedAt,
+  })
 
   const enabledZipDownloadRouteCount = ZIP_DOWNLOAD_ROUTE_OPTIONS
     .filter((option) => draft.zipDownloadRoutes.includes(option.route))
@@ -497,7 +531,6 @@ export default function SettingsModal() {
   useEffect(() => () => {
     if (profileImportUrlTooltipTimerRef.current != null) window.clearTimeout(profileImportUrlTooltipTimerRef.current)
     if (duplicateProfileTooltipTimerRef.current != null) window.clearTimeout(duplicateProfileTooltipTimerRef.current)
-    if (llmPromptTooltipTimerRef.current != null) window.clearTimeout(llmPromptTooltipTimerRef.current)
   }, [])
 
   useEffect(() => {
@@ -532,13 +565,6 @@ export default function SettingsModal() {
     if (duplicateProfileTooltipTimerRef.current != null) {
       window.clearTimeout(duplicateProfileTooltipTimerRef.current)
       duplicateProfileTooltipTimerRef.current = null
-    }
-  }
-
-  const clearLlmPromptTooltipTimer = () => {
-    if (llmPromptTooltipTimerRef.current != null) {
-      window.clearTimeout(llmPromptTooltipTimerRef.current)
-      llmPromptTooltipTimerRef.current = null
     }
   }
 
@@ -607,6 +633,7 @@ export default function SettingsModal() {
       url.searchParams.set('model', !options.includeApiKey && options.useNewApiModel ? '{model}' : model)
       if (profile.name.trim()) url.searchParams.set('profileName', profile.name.trim())
       if (profile.codexCli) url.searchParams.set('codexCli', 'true')
+      if ((profile.requestMode ?? 'auto') !== 'auto') url.searchParams.set('requestMode', profile.requestMode)
       if (profile.streamImages !== DEFAULT_SETTINGS.streamImages) url.searchParams.set('streamImages', String(Boolean(profile.streamImages)))
       if (profile.streamPartialImages !== DEFAULT_STREAM_PARTIAL_IMAGES) url.searchParams.set('streamPartialImages', String(normalizeStreamPartialImages(profile.streamPartialImages)))
 
@@ -623,6 +650,8 @@ export default function SettingsModal() {
     const importProfile: ApiProfile = {
       ...profile,
       apiKey: options.includeApiKey ? profile.apiKey : '',
+      availableModels: undefined,
+      availableModelsFetchedAt: undefined,
     }
     if (!options.includeApiKey) {
       if (options.useNewApiAddress) importProfile.baseUrl = '{address}'
@@ -660,10 +689,21 @@ export default function SettingsModal() {
     setCopyImportUrlOptions(readCopyImportUrlOptions())
   }
 
-  const getDraftWithActiveProfilePatch = (patch: Partial<ApiProfile>) => ({
+  const getDraftWithActiveProfilePatch = (patch: Partial<ApiProfile>) => {
+    const connectionChanged =
+      (patch.provider !== undefined && patch.provider !== activeProfile.provider) ||
+      (patch.baseUrl !== undefined && patch.baseUrl !== activeProfile.baseUrl) ||
+      (patch.apiKey !== undefined && patch.apiKey !== activeProfile.apiKey) ||
+      (patch.apiProxy !== undefined && patch.apiProxy !== activeProfile.apiProxy)
+    const nextPatch = connectionChanged
+      ? { ...patch, availableModels: undefined, availableModelsFetchedAt: undefined }
+      : patch
+
+    return {
       ...draft,
-      profiles: draft.profiles.map((profile) => profile.id === activeProfile.id ? { ...profile, ...patch } : profile),
-    })
+      profiles: draft.profiles.map((profile) => profile.id === activeProfile.id ? { ...profile, ...nextPatch } : profile),
+    }
+  }
 
   const updateActiveProfile = (patch: Partial<ApiProfile>, commit = false) => {
     const nextDraft = getDraftWithActiveProfilePatch(patch)
@@ -1056,6 +1096,8 @@ export default function SettingsModal() {
     if (value === ADD_CUSTOM_PROVIDER_VALUE) {
       setEditingCustomProviderId(null)
       setCustomProviderForm(createDefaultCustomProviderForm())
+      setShowAdvancedCustomProvider(false)
+      setShowCustomProviderApiKey(false)
       setShowCustomProviderImport(true)
       setCustomProviderImportError(null)
       return
@@ -1067,7 +1109,14 @@ export default function SettingsModal() {
   }
 
   const updateCustomProviderForm = (patch: Partial<CustomProviderForm>) => {
-    setCustomProviderForm((current) => ({ ...current, ...patch }))
+    setCustomProviderForm((current) => {
+      const connectionChanged =
+        (patch.baseUrl !== undefined && patch.baseUrl !== current.baseUrl) ||
+        (patch.apiKey !== undefined && patch.apiKey !== current.apiKey)
+      return connectionChanged
+        ? { ...current, ...patch, availableModels: undefined, availableModelsFetchedAt: undefined }
+        : { ...current, ...patch }
+    })
     setCustomProviderImportError(null)
   }
 
@@ -1090,20 +1139,62 @@ export default function SettingsModal() {
 
   function openEditCustomProvider(provider: CustomProviderDefinition) {
     setEditingCustomProviderId(provider.id)
-    setCustomProviderForm(customProviderToForm(provider))
+    setCustomProviderForm(customProviderToForm(
+      provider,
+      draft.profiles.find((profile) => profile.provider === provider.id),
+    ))
+    setShowAdvancedCustomProvider(true)
+    setShowCustomProviderApiKey(false)
     setShowCustomProviderImport(true)
     setCustomProviderImportError(null)
   }
 
   const saveCustomProvider = () => {
     try {
+      const name = customProviderForm.name.trim() || '新服务商'
+      const model = customProviderForm.model.trim() || getDefaultModelForMode(customProviderForm.apiMode)
+
+      if (!editingCustomProviderId && !showAdvancedCustomProvider) {
+        const profile = createDefaultOpenAIProfile({
+          id: newId('openai'),
+          name,
+          baseUrl: customProviderForm.baseUrl,
+          apiKey: customProviderForm.apiKey.trim(),
+          apiMode: customProviderForm.apiMode,
+          model,
+          availableModels: customProviderForm.availableModels,
+          availableModelsFetchedAt: customProviderForm.availableModelsFetchedAt,
+        })
+        commitSettings({
+          ...draft,
+          profiles: [...draft.profiles, profile],
+          activeProfileId: profile.id,
+        })
+        setShowCustomProviderImport(false)
+        setCustomProviderImportError(null)
+        showToast('服务商配置已创建并切换', 'success')
+        return
+      }
+
       const customProvider = buildCustomProviderFromForm()
       if (editingCustomProviderId) {
+        const linkedProfile = draft.profiles.find((profile) => profile.provider === editingCustomProviderId)
         const nextDraft = normalizeSettings({
           ...draft,
           customProviders: draft.customProviders.map((provider) =>
             provider.id === editingCustomProviderId ? customProvider : provider,
           ),
+          profiles: draft.profiles.map((profile) => profile.id === linkedProfile?.id
+            ? {
+                ...profile,
+                name,
+                baseUrl: customProviderForm.baseUrl,
+                apiKey: customProviderForm.apiKey.trim(),
+                model,
+                availableModels: customProviderForm.availableModels,
+                availableModelsFetchedAt: customProviderForm.availableModelsFetchedAt,
+              }
+            : profile),
         })
         commitSettings(nextDraft)
         setShowCustomProviderImport(false)
@@ -1113,16 +1204,28 @@ export default function SettingsModal() {
         return
       }
 
-      const nextProfile = switchApiProfileProvider(activeProfile, customProvider.id, customProvider)
+      const nextProfile = {
+        ...switchApiProfileProvider(createDefaultOpenAIProfile({
+          id: newId('profile'),
+          name,
+          baseUrl: customProviderForm.baseUrl,
+          apiKey: customProviderForm.apiKey.trim(),
+          model,
+        }), customProvider.id, customProvider),
+        availableModels: customProviderForm.availableModels,
+        availableModelsFetchedAt: customProviderForm.availableModelsFetchedAt,
+      }
       const nextDraft = normalizeSettings({
         ...draft,
         customProviders: [...draft.customProviders, customProvider],
-        profiles: draft.profiles.map((profile) => profile.id === activeProfile.id ? nextProfile : profile),
+        profiles: [...draft.profiles, nextProfile],
+        activeProfileId: nextProfile.id,
       })
       commitSettings(nextDraft)
       setShowCustomProviderImport(false)
       setEditingCustomProviderId(null)
       setCustomProviderImportError(null)
+      showToast('高级服务商配置已创建并切换', 'success')
     } catch (err) {
       setCustomProviderImportError(err instanceof Error ? err.message : String(err))
     }
@@ -1197,6 +1300,7 @@ export default function SettingsModal() {
 
       const provider = imported.customProviders[0]
       setCustomProviderForm(customProviderToForm(provider))
+      setShowAdvancedCustomProvider(true)
       setCustomProviderImportError(null)
       showToast('JSON 配置已导入', 'success')
     } catch (err) {
@@ -1335,7 +1439,7 @@ export default function SettingsModal() {
               <div className="space-y-4">
                 <div>
                   <div className="mb-1.5 flex items-center gap-1.5">
-                    <span className="block text-sm text-gray-600 dark:text-gray-300">当前配置</span>
+                    <span className="block text-sm text-gray-600 dark:text-gray-300">当前服务商配置</span>
                     <span className="relative inline-flex">
                       <button
                         type="button"
@@ -1657,17 +1761,85 @@ export default function SettingsModal() {
                 </div>
               )}
 
-              {/* 7. 模型 ID（紧跟接口选择） */}
-              <label className="block">
+              {/* 7. 请求方式 */}
+              {activeProviderIsOpenAICompatible && (
+                <div className="block">
+                  <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">请求方式</span>
+                  <div className="grid w-full grid-cols-3 gap-1 rounded-xl border border-gray-200/70 bg-gray-100/70 p-1 dark:border-white/[0.08] dark:bg-white/[0.04]" role="radiogroup" aria-label="请求方式">
+                    {([
+                      { label: '自动', value: 'auto' },
+                      { label: '同步', value: 'sync' },
+                      { label: '异步', value: 'async' },
+                    ] as const).map((option) => {
+                      const selected = (activeProfile.requestMode ?? 'auto') === option.value
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => updateActiveProfile({ requestMode: option.value }, true)}
+                          className={`min-w-0 rounded-lg px-2 py-2 text-xs font-medium transition-colors ${selected
+                            ? 'bg-white text-blue-600 shadow-sm dark:bg-white/[0.1] dark:text-blue-400'
+                            : 'text-gray-500 hover:bg-white/60 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-white/[0.06] dark:hover:text-gray-200'
+                          }`}
+                          role="radio"
+                          aria-checked={selected}
+                        >
+                          {option.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <div data-selectable-text className="mt-1.5 text-xs leading-relaxed text-gray-500 dark:text-gray-500">
+                    {(activeProfile.requestMode ?? 'auto') === 'sync' ? (
+                      <>始终调用当前 API 接口，不提交异步任务。</>
+                    ) : (activeProfile.requestMode ?? 'auto') === 'async' ? (
+                      activeCustomProviderAsync ? (
+                        <>当前服务商已配置任务轮询，将提交异步任务并轮询结果。</>
+                      ) : (
+                        <>要求服务商支持异步任务；不支持时会明确报错，不会自动改为同步请求。</>
+                      )
+                    ) : activeCustomProviderAsync ? (
+                      <>当前服务商已配置任务轮询，将自动使用异步任务。</>
+                    ) : (
+                      <>自动检测 ChatGPT2API 异步任务能力；未检测到时使用同步请求。已配置任务轮询的服务商会直接使用异步任务。</>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* 8. 可用模型列表 */}
+              {activeProviderIsOpenAICompatible && (
+                <div className="block">
+                  <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">
+                    可用模型列表
+                  </span>
+                  <ModelPicker
+                    profile={activeProfile}
+                    onSelect={(model) => updateActiveProfile({ model }, true)}
+                    onModelsChange={(availableModels, availableModelsFetchedAt) => updateActiveProfile({
+                      availableModels,
+                      availableModelsFetchedAt,
+                    }, true)}
+                  />
+                  <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
+                    获取结果会保存在当前配置中，选择模型后自动写入下方调用模型。
+                  </div>
+                </div>
+              )}
+
+              {/* 8. 调用模型 */}
+              <div className="block">
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">
-                  模型 ID
+                  调用模型
                 </span>
                 <input
                   value={activeProfile.model}
                   onChange={(e) => updateActiveProfile({ model: e.target.value })}
                   onBlur={(e) => commitActiveProfilePatch({ model: e.target.value })}
                   type="text"
-                  placeholder={activeProfile.provider === 'fal' ? DEFAULT_FAL_MODEL : getDefaultModelForMode(activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode)}
+                  placeholder={activeProfile.provider === 'fal'
+                    ? DEFAULT_FAL_MODEL
+                    : getDefaultModelForMode(activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode)}
                   className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
                 />
                 <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
@@ -1684,7 +1856,7 @@ export default function SettingsModal() {
                     <>支持通过查询参数覆盖：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">?model=</code>。</>
                   )}
                 </div>
-              </label>
+              </div>
 
               {/* 8. 流式传输 + 中间步骤图像数 */}
               {activeProfile.provider === 'openai' && (
@@ -2104,80 +2276,190 @@ export default function SettingsModal() {
                 </div>
               </div>
 
-              <div ref={customProviderScrollBoundaryRef} className="flex-1 flex flex-col min-h-0 px-1 -mx-1 pb-2">
-                <div className="mb-6 shrink-0 rounded-2xl bg-gray-50/80 p-4 border border-gray-200/60 dark:bg-white/[0.02] dark:border-white/[0.05]">
-                  <div className="mb-1.5 flex items-center gap-1.5 text-sm font-medium text-gray-800 dark:text-gray-200">
-                    <svg className="h-4 w-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                    </svg>
-                    AI 一键生成与导入
-                  </div>
-                  <div data-selectable-text className="mb-4 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-                    复制提示词发给 LLM，可根据 API 文档自动生成完整的配置（包含服务商、模型、URL 等）。复制 LLM 输出的 JSON 后，点击“从剪贴板粘贴并导入”即可一键生效。
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="relative inline-flex">
-                      <button
-                        type="button"
-                        onClick={copyCustomProviderLlmPrompt}
-                        aria-label="复制用于生成完整导入 JSON 的 LLM 提示词"
-                        onMouseEnter={() => setLlmPromptTooltipVisible(true)}
-                        onMouseLeave={() => setLlmPromptTooltipVisible(false)}
-                        onFocus={() => setLlmPromptTooltipVisible(true)}
-                        onBlur={() => setLlmPromptTooltipVisible(false)}
-                        onTouchStart={() => {
-                          clearLlmPromptTooltipTimer()
-                          llmPromptTooltipTimerRef.current = window.setTimeout(() => {
-                            setLlmPromptTooltipVisible(true)
-                            llmPromptTooltipTimerRef.current = null
-                          }, 450)
-                        }}
-                        onTouchEnd={clearLlmPromptTooltipTimer}
-                        onTouchCancel={clearLlmPromptTooltipTimer}
-                        className="flex items-center gap-1.5 rounded-xl bg-white px-3 py-2 text-xs font-medium text-gray-700 shadow-sm border border-gray-200/80 transition hover:bg-gray-50 hover:text-gray-900 dark:bg-white/[0.05] dark:border-white/[0.08] dark:text-gray-300 dark:hover:bg-white/[0.08] dark:hover:text-white"
-                      >
-                        <LinkIcon className="h-3.5 w-3.5" />
-                        复制生成提示词
-                      </button>
-                      <ViewportTooltip visible={llmPromptTooltipVisible} className="w-56 whitespace-normal text-center">
-                        生成完整的服务商和配置信息，包含模型和接口地址，导入后只需填入 API Key。
-                      </ViewportTooltip>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={handleCustomProviderJsonPaste}
-                      disabled={isImportingJson}
-                      className="flex items-center gap-1.5 rounded-xl bg-white px-3 py-2 text-xs font-medium text-gray-700 shadow-sm border border-gray-200/80 transition hover:bg-gray-50 hover:text-gray-900 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-white/[0.05] dark:border-white/[0.08] dark:text-gray-300 dark:hover:bg-white/[0.08] dark:hover:text-white"
-                    >
-                    {isImportingJson ? (
-                      <>
-                        <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
-                        导入中...
-                      </>
-                    ) : (
-                      '从剪贴板粘贴并导入'
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex-1 flex flex-col min-h-0">
-                <label className="flex-1 flex flex-col min-h-0">
-                  <span className="mb-1 shrink-0 block text-xs text-gray-500 dark:text-gray-400">手动编辑 (仅接口映射 Manifest)</span>
-                  <textarea
-                    value={customProviderForm.json}
-                    onChange={(e) => updateCustomProviderForm({ json: e.target.value })}
-                    spellCheck={false}
-                    className="flex-1 min-h-[150px] w-full resize-none rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2 font-mono text-xs leading-relaxed text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50 custom-scrollbar"
+              <div ref={customProviderScrollBoundaryRef} className="flex-1 min-h-0 space-y-4 overflow-y-auto px-1 pb-2 custom-scrollbar">
+                <label className="block">
+                  <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">服务商名称</span>
+                  <input
+                    value={customProviderForm.name}
+                    onChange={(e) => updateCustomProviderForm({ name: e.target.value })}
+                    type="text"
+                    placeholder="例如：我的图像服务"
+                    className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
                   />
                 </label>
-              </div>
+
+                <label className="block">
+                  <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">API URL</span>
+                  <input
+                    value={customProviderForm.baseUrl}
+                    onChange={(e) => updateCustomProviderForm({ baseUrl: e.target.value })}
+                    type="text"
+                    placeholder="https://api.example.com/v1"
+                    className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
+                  />
+                </label>
+
+                <div className="block">
+                  <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">API Key</span>
+                  <div className="relative">
+                    <input
+                      value={customProviderForm.apiKey}
+                      onChange={(e) => updateCustomProviderForm({ apiKey: e.target.value })}
+                      type={showCustomProviderApiKey ? 'text' : 'password'}
+                      placeholder="sk-..."
+                      className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 pr-10 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowCustomProviderApiKey((visible) => !visible)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 transition-colors hover:text-gray-600 dark:hover:text-gray-200"
+                      aria-label={showCustomProviderApiKey ? '隐藏 API Key' : '显示 API Key'}
+                    >
+                      {showCustomProviderApiKey ? (
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+                          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8z" />
+                          <circle cx="12" cy="12" r="3" />
+                        </svg>
+                      ) : (
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+                          <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+                          <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+                          <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
+                          <line x1="1" y1="1" x2="23" y2="23" />
+                        </svg>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="block">
+                  <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">API 接口</span>
+                  <Select
+                    value={customProviderForm.apiMode}
+                    onChange={(value) => {
+                      const apiMode = value as AppSettings['apiMode']
+                      const model = customProviderForm.model === DEFAULT_IMAGES_MODEL || customProviderForm.model === DEFAULT_RESPONSES_MODEL
+                        ? getDefaultModelForMode(apiMode)
+                        : customProviderForm.model
+                      updateCustomProviderForm({ apiMode, model })
+                    }}
+                    options={showAdvancedCustomProvider
+                      ? [{ label: 'Images API (/v1/images)', value: 'images' }]
+                      : [
+                          { label: 'Images API (/v1/images)', value: 'images' },
+                          { label: 'Responses API (/v1/responses)', value: 'responses' },
+                        ]}
+                    disabled={showAdvancedCustomProvider}
+                    className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
+                  />
+                </div>
+
+                <div className="block">
+                  <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">可用模型列表</span>
+                  <ModelPicker
+                    profile={customProviderModelProfile}
+                    onSelect={(model) => updateCustomProviderForm({ model })}
+                    onModelsChange={(availableModels, availableModelsFetchedAt) => updateCustomProviderForm({
+                      availableModels,
+                      availableModelsFetchedAt,
+                    })}
+                  />
+                </div>
+
+                <label className="block">
+                  <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">调用模型</span>
+                  <input
+                    value={customProviderForm.model}
+                    onChange={(e) => updateCustomProviderForm({ model: e.target.value })}
+                    type="text"
+                    placeholder={getDefaultModelForMode(customProviderForm.apiMode)}
+                    className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
+                  />
+                </label>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const showAdvanced = !showAdvancedCustomProvider
+                    if (showAdvanced && customProviderForm.apiMode === 'responses') {
+                      updateCustomProviderForm({
+                        apiMode: 'images',
+                        model: customProviderForm.model === DEFAULT_RESPONSES_MODEL ? DEFAULT_IMAGES_MODEL : customProviderForm.model,
+                      })
+                    }
+                    setShowAdvancedCustomProvider(showAdvanced)
+                  }}
+                  className="flex w-full items-center justify-between border-t border-gray-200/70 py-3 text-left text-sm font-medium text-gray-600 transition hover:text-gray-900 dark:border-white/[0.08] dark:text-gray-300 dark:hover:text-white"
+                  aria-expanded={showAdvancedCustomProvider}
+                >
+                  <span>高级接口映射</span>
+                  <ChevronDownIcon className={`h-4 w-4 transition-transform ${showAdvancedCustomProvider ? 'rotate-180' : ''}`} />
+                </button>
+
+                {showAdvancedCustomProvider && (
+                  <div className="space-y-4">
+                    <div className="border-b border-gray-200/70 pb-4 dark:border-white/[0.08]">
+                      <div className="mb-1.5 flex items-center gap-1.5 text-sm font-medium text-gray-800 dark:text-gray-200">
+                        <svg className="h-4 w-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                        AI 生成接口映射
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="relative inline-flex">
+                          <button
+                            type="button"
+                            onClick={copyCustomProviderLlmPrompt}
+                            aria-label="复制用于生成完整导入 JSON 的 LLM 提示词"
+                            onMouseEnter={() => setLlmPromptTooltipVisible(true)}
+                            onMouseLeave={() => setLlmPromptTooltipVisible(false)}
+                            onFocus={() => setLlmPromptTooltipVisible(true)}
+                            onBlur={() => setLlmPromptTooltipVisible(false)}
+                            className="flex items-center gap-1.5 rounded-lg border border-gray-200/80 bg-white px-3 py-2 text-xs font-medium text-gray-700 transition hover:bg-gray-50 dark:border-white/[0.08] dark:bg-white/[0.05] dark:text-gray-300 dark:hover:bg-white/[0.08]"
+                          >
+                            <LinkIcon className="h-3.5 w-3.5" />
+                            复制生成提示词
+                          </button>
+                          <ViewportTooltip visible={llmPromptTooltipVisible} className="w-56 whitespace-normal text-center">
+                            适用于非标准、异步任务或特殊字段映射接口。
+                          </ViewportTooltip>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleCustomProviderJsonPaste}
+                          disabled={isImportingJson}
+                          className="rounded-lg border border-gray-200/80 bg-white px-3 py-2 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/[0.08] dark:bg-white/[0.05] dark:text-gray-300 dark:hover:bg-white/[0.08]"
+                        >
+                          {isImportingJson ? '导入中...' : '从剪贴板导入'}
+                        </button>
+                      </div>
+                    </div>
+
+                    <label className="block">
+                      <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">接口映射 Manifest</span>
+                      <textarea
+                        value={customProviderForm.json}
+                        onChange={(e) => {
+                          const json = e.target.value
+                          try {
+                            const input = JSON.parse(json) as Record<string, unknown>
+                            const name = typeof input.name === 'string' && input.name.trim()
+                              ? input.name.trim()
+                              : customProviderForm.name
+                            updateCustomProviderForm({ json, name })
+                          } catch {
+                            updateCustomProviderForm({ json })
+                          }
+                        }}
+                        spellCheck={false}
+                        className="min-h-[260px] w-full resize-y rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2 font-mono text-xs leading-relaxed text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50 custom-scrollbar"
+                      />
+                    </label>
+                  </div>
+                )}
 
                 {customProviderImportError && (
-                  <div data-selectable-text className="shrink-0 mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-500 dark:bg-red-500/10 dark:text-red-300">
+                  <div data-selectable-text className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-500 dark:bg-red-500/10 dark:text-red-300">
                     {customProviderImportError}
                   </div>
                 )}

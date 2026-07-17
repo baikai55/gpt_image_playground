@@ -1,4 +1,4 @@
-import type { ApiMode } from '../types'
+import type { ApiMode, ApiRequestMode } from '../types'
 import { DEFAULT_STREAM_PARTIAL_IMAGES } from '../types'
 
 import { normalizeBaseUrl } from './devProxy'
@@ -14,6 +14,7 @@ export interface DefaultApiUrlPatch {
   baseUrl: string
   apiKey?: string
   apiMode?: ApiMode
+  requestMode?: ApiRequestMode
   model?: string
   name?: string
   codexCli?: boolean
@@ -34,6 +35,7 @@ export function parseDefaultApiUrl(rawUrl: string): DefaultApiUrlPatch {
     const apiUrlParam = parsed.searchParams.get('apiUrl')
     const apiKeyParam = parsed.searchParams.get('apiKey')
     const apiModeParam = parsed.searchParams.get('apiMode')
+    const requestModeParam = parsed.searchParams.get('requestMode')
     const modelParam = parsed.searchParams.get('model')
     const profileNameParam = parsed.searchParams.get('profileName')
     const codexCliParam = parsed.searchParams.get('codexCli')
@@ -43,6 +45,7 @@ export function parseDefaultApiUrl(rawUrl: string): DefaultApiUrlPatch {
     if (apiUrlParam !== null) patch.baseUrl = normalizeBaseUrl(apiUrlParam.trim())
     if (apiKeyParam !== null) patch.apiKey = apiKeyParam.trim()
     if (apiModeParam === 'images' || apiModeParam === 'responses') patch.apiMode = apiModeParam
+    if (requestModeParam === 'auto' || requestModeParam === 'sync' || requestModeParam === 'async') patch.requestMode = requestModeParam
     if (modelParam !== null && modelParam.trim()) patch.model = modelParam.trim()
     if (profileNameParam?.trim()) patch.name = profileNameParam.trim()
     if (codexCliParam !== null) patch.codexCli = codexCliParam.trim().toLowerCase() === 'true'

@@ -2931,3 +2931,37 @@ describe('reused task API profile', () => {
     expect(state.showSettings).toBe(false)
   })
 })
+
+describe('available model cache settings', () => {
+  beforeEach(() => {
+    useStore.setState({
+      settings: normalizeSettings({
+        ...DEFAULT_SETTINGS,
+        profiles: [createDefaultOpenAIProfile({
+          baseUrl: 'https://old.example.com/v1',
+          apiKey: 'old-key',
+          model: 'old-model',
+          availableModels: ['old-model', 'other-model'],
+          availableModelsFetchedAt: 123456,
+        })],
+      }),
+    })
+  })
+
+  it('keeps the saved list when only the calling model changes', () => {
+    useStore.getState().setSettings({ model: 'other-model' })
+
+    expect(useStore.getState().settings.profiles[0]).toMatchObject({
+      model: 'other-model',
+      availableModels: ['old-model', 'other-model'],
+      availableModelsFetchedAt: 123456,
+    })
+  })
+
+  it('clears the saved list when legacy settings change the API connection', () => {
+    useStore.getState().setSettings({ baseUrl: 'https://new.example.com/v1' })
+
+    expect(useStore.getState().settings.profiles[0].availableModels).toBeUndefined()
+    expect(useStore.getState().settings.profiles[0].availableModelsFetchedAt).toBeUndefined()
+  })
+})

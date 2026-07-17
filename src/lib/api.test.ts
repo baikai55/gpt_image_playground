@@ -2,12 +2,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
 import { DEFAULT_SETTINGS } from './apiProfiles'
 import { callImageApi } from './api'
+import { clearChatGpt2ApiAsyncCapabilityCache } from './chatGpt2ApiAsync'
 
 describe('callImageApi', () => {
   afterEach(() => {
     vi.restoreAllMocks()
     vi.unstubAllEnvs()
     vi.useRealTimers()
+    clearChatGpt2ApiAsyncCapabilityCache()
   })
 
   it.each([false, true])(
@@ -959,5 +961,238 @@ describe('callImageApi', () => {
     await expect(promise).resolves.toEqual({
       images: ['data:image/png;base64,aW1hZ2U='],
     })
+  })
+
+  it('auto-detects ChatGPT2API tasks and polls them with the stable request id', async () => {
+    const onCustomTaskEnqueued = vi.fn()
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === 'https://chat.yueming.uk/openapi.json') {
+        return new Response(JSON.stringify({
+          paths: {
+            '/api/image-tasks/generations': { post: {} },
+            '/api/image-tasks': { get: {} },
+          },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url === 'https://chat.yueming.uk/api/image-tasks/generations') {
+        expect(init?.method).toBe('POST')
+        expect(JSON.parse(String(init?.body))).toEqual(expect.objectContaining({
+          client_task_id: 'gallery-task-1',
+          prompt: 'prompt',
+          model: 'gpt-image-2',
+        }))
+        return new Response(JSON.stringify({ id: 'gallery-task-1', status: 'queued' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (url === 'https://chat.yueming.uk/api/image-tasks?ids=gallery-task-1') {
+        expect(init?.method).toBe('GET')
+        return new Response(JSON.stringify({
+          items: [{
+            id: 'gallery-task-1',
+            status: 'success',
+            data: [{ b64_json: 'aW1hZ2U=' }],
+          }],
+          missing_ids: [],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    const result = await callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        baseUrl: 'https://chat.yueming.uk/v1',
+        apiKey: 'test-key',
+        profiles: [{
+          ...DEFAULT_SETTINGS.profiles[0],
+          baseUrl: 'https://chat.yueming.uk/v1',
+          apiKey: 'test-key',
+          requestMode: 'auto',
+        }],
+      },
+      requestId: 'gallery-task-1',
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+      onCustomTaskEnqueued,
+    })
+
+    expect(result).toEqual({ images: ['data:image/png;base64,aW1hZ2U='] })
+    expect(onCustomTaskEnqueued).toHaveBeenCalledWith({ taskId: 'gallery-task-1' })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/api/image-tasks/generations'))).toHaveLength(1)
+  })
+
+  it('uses the synchronous Images API without capability detection when sync is selected', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      data: [{ b64_json: 'aW1hZ2U=' }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    await callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        baseUrl: 'https://chat.yueming.uk/v1',
+        apiKey: 'test-key',
+        profiles: [{
+          ...DEFAULT_SETTINGS.profiles[0],
+          baseUrl: 'https://chat.yueming.uk/v1',
+          apiKey: 'test-key',
+          requestMode: 'sync',
+        }],
+      },
+      requestId: 'gallery-task-2',
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe('https://chat.yueming.uk/v1/images/generations')
+  })
+
+  it('reports unsupported forced async mode without falling back to a synchronous request', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      detail: 'Not Found',
+    }), { status: 404, headers: { 'Content-Type': 'application/json' } }))
+
+    await expect(callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'test-key',
+        profiles: [{
+          ...DEFAULT_SETTINGS.profiles[0],
+          baseUrl: 'https://api.example.com/v1',
+          apiKey: 'test-key',
+          requestMode: 'async',
+        }],
+      },
+      requestId: 'gallery-task-3',
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })).rejects.toThrow('不支持 ChatGPT2API 异步任务接口')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.example.com/api/image-tasks/generations')
+  })
+
+  it('falls back once when an auto-detected async submit endpoint returns 404', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        paths: {
+          '/api/image-tasks/generations': { post: {} },
+          '/api/image-tasks': { get: {} },
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'Not Found' }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ b64_json: 'aW1hZ2U=' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+
+    const result = await callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        baseUrl: 'https://chat.yueming.uk/v1',
+        apiKey: 'test-key',
+        profiles: [{
+          ...DEFAULT_SETTINGS.profiles[0],
+          baseUrl: 'https://chat.yueming.uk/v1',
+          apiKey: 'test-key',
+          requestMode: 'auto',
+        }],
+      },
+      requestId: 'gallery-task-4',
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    expect(result.images).toEqual(['data:image/png;base64,aW1hZ2U='])
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      'https://chat.yueming.uk/openapi.json',
+      'https://chat.yueming.uk/api/image-tasks/generations',
+      'https://chat.yueming.uk/v1/images/generations',
+    ])
+  })
+
+  it.each([401, 403, 429, 500])('does not fall back from async submit HTTP %s', async (status) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        paths: {
+          '/api/image-tasks/generations': { post: {} },
+          '/api/image-tasks': { get: {} },
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: `HTTP ${status}` } }), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+
+    await expect(callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        baseUrl: 'https://chat.yueming.uk/v1',
+        apiKey: 'test-key',
+        profiles: [{
+          ...DEFAULT_SETTINGS.profiles[0],
+          baseUrl: 'https://chat.yueming.uk/v1',
+          apiKey: 'test-key',
+          requestMode: 'auto',
+        }],
+      },
+      requestId: `gallery-task-${status}`,
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })).rejects.toThrow(`HTTP ${status}`)
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('never resubmits after an async task id has been received', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        paths: {
+          '/api/image-tasks/generations': { post: {} },
+          '/api/image-tasks': { get: {} },
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'gallery-task-5', status: 'queued' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'Not Found' }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+
+    await expect(callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        baseUrl: 'https://chat.yueming.uk/v1',
+        apiKey: 'test-key',
+        profiles: [{
+          ...DEFAULT_SETTINGS.profiles[0],
+          baseUrl: 'https://chat.yueming.uk/v1',
+          apiKey: 'test-key',
+          requestMode: 'auto',
+        }],
+      },
+      requestId: 'gallery-task-5',
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })).rejects.toThrow('Not Found')
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/api/image-tasks/generations'))).toHaveLength(1)
   })
 })

@@ -79,6 +79,98 @@ describe('default API URL env', () => {
   })
 })
 
+describe('API request modes', () => {
+  it('defaults legacy and invalid profile values to auto', () => {
+    const legacy = normalizeSettings({
+      profiles: [{
+        id: 'legacy-profile',
+        name: 'Legacy Profile',
+        provider: 'openai',
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'key',
+        model: 'model',
+        timeout: 300,
+        apiMode: 'images',
+        codexCli: false,
+        apiProxy: false,
+      }],
+    })
+    const invalid = normalizeSettings({
+      profiles: [{ ...createDefaultOpenAIProfile(), requestMode: 'invalid' }],
+    })
+
+    expect(createDefaultOpenAIProfile().requestMode).toBe('auto')
+    expect(createDefaultFalProfile().requestMode).toBe('auto')
+    expect(legacy.profiles[0].requestMode).toBe('auto')
+    expect(invalid.profiles[0].requestMode).toBe('auto')
+  })
+
+  it('keeps request modes isolated in provider drafts when switching providers', () => {
+    const openai = createDefaultOpenAIProfile({ requestMode: 'sync' })
+    const fal = switchApiProfileProvider(openai, 'fal')
+    const restoredOpenAI = switchApiProfileProvider({ ...fal, requestMode: 'async' }, 'openai')
+    const restoredFal = switchApiProfileProvider(restoredOpenAI, 'fal')
+
+    expect(fal.requestMode).toBe('auto')
+    expect(fal.providerDrafts?.openai?.requestMode).toBe('sync')
+    expect(restoredOpenAI.requestMode).toBe('sync')
+    expect(restoredOpenAI.providerDrafts?.fal?.requestMode).toBe('async')
+    expect(restoredFal.requestMode).toBe('async')
+  })
+
+  it('preserves request modes through JSON import and profile deduplication', () => {
+    const current = normalizeSettings({
+      profiles: [createDefaultOpenAIProfile({
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'same-key',
+        model: 'same-model',
+        requestMode: 'sync',
+      })],
+    })
+    const imported = importCustomProviderSettingsFromJson(JSON.stringify({
+      customProviders: [{
+        id: 'custom-async',
+        name: 'Custom Async',
+        submit: { path: 'images/generations', taskIdPath: 'id' },
+        poll: {
+          path: 'tasks/{task_id}',
+          statusPath: 'status',
+          successValues: ['success'],
+          failureValues: ['error'],
+          result: { imageUrlPaths: ['data.*.url'] },
+        },
+      }],
+      profiles: [{
+        id: 'custom-profile',
+        name: 'Custom Profile',
+        provider: 'custom-async',
+        baseUrl: 'https://custom.example.com/v1',
+        apiKey: 'custom-key',
+        model: 'custom-model',
+        requestMode: 'async',
+      }],
+    }))
+    const merged = mergeImportedSettings(current, {
+      profiles: [{
+        ...createDefaultOpenAIProfile({
+          id: 'same-profile-async',
+          baseUrl: 'https://api.example.com/v1',
+          apiKey: 'same-key',
+          model: 'same-model',
+          requestMode: 'async',
+        }),
+      }],
+    })
+
+    expect(imported.profiles[0].requestMode).toBe('async')
+    expect(normalizeSettings(JSON.parse(JSON.stringify({
+      customProviders: imported.customProviders,
+      profiles: imported.profiles,
+    }))).profiles[0].requestMode).toBe('async')
+    expect(merged.profiles.map((profile) => profile.requestMode)).toEqual(['sync', 'async'])
+  })
+})
+
 describe('mergeImportedSettings', () => {
   it('replaces the default OpenAI profile with legacy imported settings when current settings are untouched', () => {
     const merged = mergeImportedSettings(DEFAULT_SETTINGS, {
@@ -422,6 +514,38 @@ describe('mergeImportedSettings', () => {
 })
 
 describe('custom providers', () => {
+  it('normalizes and keeps the saved available model list', () => {
+    const settings = normalizeSettings({
+      profiles: [{
+        ...createDefaultOpenAIProfile(),
+        availableModels: [' model-a ', 'model-b', 'model-a', '', 42],
+        availableModelsFetchedAt: 123456,
+      }],
+    })
+
+    expect(settings.profiles[0].availableModels).toEqual(['model-a', 'model-b'])
+    expect(settings.profiles[0].availableModelsFetchedAt).toBe(123456)
+  })
+
+  it('drops the saved model list when it is empty or the provider changes', () => {
+    const emptyListProfile = normalizeSettings({
+      profiles: [{
+        ...createDefaultOpenAIProfile(),
+        availableModels: ['', '  '],
+        availableModelsFetchedAt: 123456,
+      }],
+    }).profiles[0]
+    const switchedProfile = switchApiProfileProvider(createDefaultOpenAIProfile({
+      availableModels: ['model-a'],
+      availableModelsFetchedAt: 123456,
+    }), 'fal')
+
+    expect(emptyListProfile.availableModels).toBeUndefined()
+    expect(emptyListProfile.availableModelsFetchedAt).toBeUndefined()
+    expect(switchedProfile.availableModels).toBeUndefined()
+    expect(switchedProfile.availableModelsFetchedAt).toBeUndefined()
+  })
+
   it('normalizes custom provider definitions and keeps custom profiles', () => {
     const settings = normalizeSettings({
       customProviders: [{

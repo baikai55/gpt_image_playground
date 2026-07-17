@@ -2,6 +2,7 @@ import type {
   ApiMode,
   ApiProfile,
   ApiProvider,
+  ApiRequestMode,
   AppSettings,
   AgentApiConfigMode,
   CustomProviderContentType,
@@ -68,6 +69,10 @@ function getDefaultStreamImages(provider: ApiProvider, apiMode: ApiMode): boolea
   return provider === 'openai' && apiMode === 'responses'
 }
 
+export function normalizeApiRequestMode(value: unknown): ApiRequestMode {
+  return value === 'sync' || value === 'async' ? value : 'auto'
+}
+
 export { normalizeStreamPartialImages } from './defaultApiUrl'
 
 export function normalizeAgentMaxToolRounds(value: unknown, fallback: number | undefined = DEFAULT_AGENT_MAX_TOOL_ROUNDS): number {
@@ -89,6 +94,15 @@ function normalizeZipDownloadRoutes(value: unknown) {
   if (!Array.isArray(value)) return [...DEFAULT_ZIP_DOWNLOAD_ROUTES]
   const allowed = new Set<string>(ZIP_DOWNLOAD_ROUTE_VALUES)
   return value.filter((item): item is typeof ZIP_DOWNLOAD_ROUTE_VALUES[number] => typeof item === 'string' && allowed.has(item))
+}
+
+function normalizeAvailableModels(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const models = value
+    .map((item) => typeof item === 'string' ? item.trim() : '')
+    .filter(Boolean)
+  const uniqueModels = [...new Set(models)]
+  return uniqueModels.length ? uniqueModels : undefined
 }
 
 function normalizeProviderOrder(value: unknown, customProviders: CustomProviderDefinition[]): string[] | undefined {
@@ -116,7 +130,10 @@ function isCustomProviderTemplate(value: unknown): value is CustomProviderTempla
 }
 
 function normalizeProviderPath(value: unknown, fallback: string): string {
-  return (typeof value === 'string' && value.trim() ? value : fallback).trim().replace(/^\/+/, '').replace(/^v1\//, '')
+  const path = (typeof value === 'string' && value.trim() ? value : fallback).trim()
+  const normalized = path.replace(/^\/+/, '')
+  if (normalized.startsWith('v1/')) return normalized.slice(3)
+  return path.startsWith('/') ? `/${normalized}` : normalized
 }
 
 function normalizeStringRecord(value: unknown): Record<string, string> | undefined {
@@ -332,6 +349,7 @@ export function createDefaultOpenAIProfile(overrides: Partial<ApiProfile> = {}):
     streamPartialImages: DEFAULT_API_URL_PATCH?.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES,
     ...overrides,
     apiMode,
+    requestMode: normalizeApiRequestMode(overrides.requestMode ?? DEFAULT_API_URL_PATCH?.requestMode),
     streamImages,
   }
 }
@@ -351,6 +369,7 @@ export function createDefaultFalProfile(overrides: Partial<ApiProfile> = {}): Ap
     streamImages: false,
     streamPartialImages: DEFAULT_STREAM_PARTIAL_IMAGES,
     ...overrides,
+    requestMode: normalizeApiRequestMode(overrides.requestMode),
   }
 }
 
@@ -361,6 +380,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
       baseUrl: profile.baseUrl,
       model: profile.model,
       apiMode: profile.apiMode,
+      requestMode: profile.requestMode,
       codexCli: profile.codexCli,
       apiProxy: profile.apiProxy,
       responseFormatB64Json: profile.responseFormatB64Json,
@@ -377,11 +397,14 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
       baseUrl: savedDraft?.baseUrl ?? DEFAULT_FAL_BASE_URL,
       model: savedDraft?.model ?? DEFAULT_FAL_MODEL,
       apiMode: 'images',
+      requestMode: savedDraft?.requestMode ?? 'auto',
       codexCli: false,
       apiProxy: false,
       responseFormatB64Json: savedDraft?.responseFormatB64Json,
       streamImages: false,
       streamPartialImages: savedDraft?.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES,
+      availableModels: undefined,
+      availableModelsFetchedAt: undefined,
       providerDrafts,
     }
   }
@@ -394,11 +417,14 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
       baseUrl: savedDraft?.baseUrl ?? (shouldUseOpenAIDefaults ? DEFAULT_BASE_URL : profile.baseUrl || DEFAULT_BASE_URL),
       model: savedDraft?.model ?? (shouldUseOpenAIDefaults ? DEFAULT_IMAGES_MODEL : profile.model || DEFAULT_IMAGES_MODEL),
       apiMode: 'images',
+      requestMode: savedDraft?.requestMode ?? 'auto',
       codexCli: false,
       apiProxy: false,
       responseFormatB64Json: savedDraft?.responseFormatB64Json,
       streamImages: false,
       streamPartialImages: savedDraft?.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES,
+      availableModels: undefined,
+      availableModelsFetchedAt: undefined,
       providerDrafts,
     }
   }
@@ -417,11 +443,14 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
     baseUrl: savedDraft?.baseUrl ?? DEFAULT_BASE_URL,
     model: savedDraft?.model ?? DEFAULT_IMAGES_MODEL,
     apiMode: nextApiMode,
+    requestMode: savedDraft?.requestMode ?? 'auto',
     codexCli: savedDraft?.codexCli ?? profile.codexCli,
     apiProxy: savedDraft?.apiProxy ?? DEFAULT_OPENAI_API_PROXY,
     responseFormatB64Json: savedDraft?.responseFormatB64Json,
     streamImages: nextStreamImages,
     streamPartialImages: nextStreamPartialImages,
+    availableModels: undefined,
+    availableModelsFetchedAt: undefined,
     providerDrafts,
   }
 }
@@ -441,6 +470,7 @@ function normalizeProviderDraft(input: unknown, provider: ApiProvider, customPro
       : baseUrl,
     model,
     apiMode,
+    requestMode: normalizeApiRequestMode(input.requestMode),
     codexCli: typeof input.codexCli === 'boolean' ? input.codexCli : fallback.codexCli,
     apiProxy: typeof input.apiProxy === 'boolean' ? input.apiProxy : fallback.apiProxy,
     responseFormatB64Json: input.responseFormatB64Json === true ? true : undefined,
@@ -470,6 +500,7 @@ export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfil
   const streamImages = provider === 'openai'
     ? typeof record.streamImages === 'boolean' ? record.streamImages : defaults.streamImages
     : false
+  const availableModels = normalizeAvailableModels(record.availableModels)
 
   return {
     ...defaults,
@@ -479,8 +510,13 @@ export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfil
     baseUrl: provider === 'fal' ? rawBaseUrl.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL : rawBaseUrl,
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : defaults.apiKey,
     model: typeof record.model === 'string' && record.model.trim() ? record.model : defaults.model,
+    availableModels,
+    availableModelsFetchedAt: availableModels && typeof record.availableModelsFetchedAt === 'number' && Number.isFinite(record.availableModelsFetchedAt)
+      ? record.availableModelsFetchedAt
+      : undefined,
     timeout: typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : defaults.timeout,
     apiMode,
+    requestMode: normalizeApiRequestMode(record.requestMode),
     codexCli: Boolean(record.codexCli),
     apiProxy: typeof record.apiProxy === 'boolean' ? record.apiProxy : defaults.apiProxy,
     responseFormatB64Json: record.responseFormatB64Json === true ? true : undefined,
@@ -695,6 +731,7 @@ function isDefaultOpenAIProfile(profile: ApiProfile): boolean {
     profile.model === DEFAULT_IMAGES_MODEL &&
     profile.timeout === DEFAULT_API_TIMEOUT &&
     profile.apiMode === 'images' &&
+    profile.requestMode === 'auto' &&
     profile.codexCli === false &&
     profile.apiProxy === DEFAULT_OPENAI_API_PROXY &&
     profile.streamImages === false &&
@@ -724,6 +761,7 @@ function getApiProfileDedupKey(profile: ApiProfile): string {
     profile.apiKey.trim(),
     profile.model.trim(),
     profile.apiMode,
+    profile.requestMode,
   ])
 }
 
@@ -733,6 +771,7 @@ function getApiProfileConnectionKey(profile: ApiProfile): string {
     profile.baseUrl.trim().replace(/\/+$/, '').toLowerCase(),
     profile.model.trim(),
     profile.apiMode,
+    profile.requestMode,
   ])
 }
 

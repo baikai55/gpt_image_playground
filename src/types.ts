@@ -1,6 +1,7 @@
 // ===== 设置 =====
 
 export type ApiMode = 'images' | 'responses'
+export type ApiRequestMode = 'auto' | 'sync' | 'async'
 export type AppMode = 'gallery' | 'agent'
 export type AgentApiConfigMode = 'off' | 'native' | 'hybrid'
 export type ReferenceImageEditAction = 'ask' | 'replace-reference' | 'add-mask'
@@ -74,14 +75,17 @@ export interface ApiProfile {
   baseUrl: string
   apiKey: string
   model: string
+  availableModels?: string[]
+  availableModelsFetchedAt?: number
   timeout: number
   apiMode: ApiMode
+  requestMode: ApiRequestMode
   codexCli: boolean
   apiProxy: boolean
   responseFormatB64Json?: boolean
   streamImages?: boolean
   streamPartialImages?: number
-  providerDrafts?: Partial<Record<ApiProvider, Partial<Pick<ApiProfile, 'baseUrl' | 'model' | 'apiMode' | 'codexCli' | 'apiProxy' | 'responseFormatB64Json' | 'streamImages' | 'streamPartialImages'>>>>
+  providerDrafts?: Partial<Record<ApiProvider, Partial<Pick<ApiProfile, 'baseUrl' | 'model' | 'apiMode' | 'requestMode' | 'codexCli' | 'apiProxy' | 'responseFormatB64Json' | 'streamImages' | 'streamPartialImages'>>>>
 }
 
 export interface AppSettings {

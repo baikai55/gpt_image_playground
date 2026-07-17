@@ -740,6 +740,9 @@ function resolveTemplateValue(value: unknown, context: Record<string, unknown>):
 function createCustomProviderContext(opts: CallApiOptions, profile: ApiProfile) {
   return {
     profile,
+    request: {
+      id: opts.requestId ?? globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    },
     prompt: opts.prompt,
     params: opts.params,
     inputImages: {
@@ -875,7 +878,11 @@ async function submitCustomRequest(mapping: CustomProviderSubmitMapping, opts: C
     signal: controller.signal,
   })
 
-  if (!response.ok) throw new Error(await getApiErrorMessage(response))
+  if (!response.ok) {
+    const err = new Error(await getApiErrorMessage(response)) as Error & { status?: number }
+    err.status = response.status
+    throw err
+  }
   return response.json()
 }
 

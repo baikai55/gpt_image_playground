@@ -46,6 +46,7 @@ import { callImageApi } from './lib/api'
 import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, type AgentApiResultImage } from './lib/agentApi'
 import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId, replaceAgentPromptImageReferencesForApi } from './lib/agentImageReferences'
 import { showBrowserNotification } from './lib/browserNotification'
+import { CHATGPT2API_ASYNC_PROVIDER } from './lib/chatGpt2ApiAsync'
 import { IMAGE_FETCH_CORS_HINT } from './lib/imageApiShared'
 import { getFalErrorMessage, getFalQueuedImageResult } from './lib/falAiImageApi'
 import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
@@ -1244,22 +1245,28 @@ export const useStore = create<AppState>()(
           incoming.streamPartialImages !== undefined
         const merged = normalizeSettings({ ...previous, ...incoming })
         if (hasLegacyOverrides && incoming.profiles === undefined) {
-          merged.profiles = merged.profiles.map((profile) =>
-            profile.id === merged.activeProfileId
-              ? {
-                  ...profile,
-                  baseUrl: incoming.baseUrl ?? profile.baseUrl,
-                  apiKey: incoming.apiKey ?? profile.apiKey,
-                  model: incoming.model ?? profile.model,
-                  timeout: incoming.timeout ?? profile.timeout,
-                  apiMode: incoming.apiMode === 'images' || incoming.apiMode === 'responses' ? incoming.apiMode : profile.apiMode,
-                  codexCli: incoming.codexCli ?? profile.codexCli,
-                  apiProxy: incoming.apiProxy ?? profile.apiProxy,
-                  streamImages: incoming.streamImages ?? profile.streamImages,
-                  streamPartialImages: incoming.streamPartialImages ?? profile.streamPartialImages,
-                }
-              : profile,
-          )
+          merged.profiles = merged.profiles.map((profile) => {
+            if (profile.id !== merged.activeProfileId) return profile
+            const connectionChanged =
+              (incoming.baseUrl !== undefined && incoming.baseUrl !== profile.baseUrl) ||
+              (incoming.apiKey !== undefined && incoming.apiKey !== profile.apiKey) ||
+              (incoming.apiProxy !== undefined && incoming.apiProxy !== profile.apiProxy)
+            return {
+              ...profile,
+              baseUrl: incoming.baseUrl ?? profile.baseUrl,
+              apiKey: incoming.apiKey ?? profile.apiKey,
+              model: incoming.model ?? profile.model,
+              timeout: incoming.timeout ?? profile.timeout,
+              apiMode: incoming.apiMode === 'images' || incoming.apiMode === 'responses' ? incoming.apiMode : profile.apiMode,
+              codexCli: incoming.codexCli ?? profile.codexCli,
+              apiProxy: incoming.apiProxy ?? profile.apiProxy,
+              streamImages: incoming.streamImages ?? profile.streamImages,
+              streamPartialImages: incoming.streamPartialImages ?? profile.streamPartialImages,
+              ...(connectionChanged
+                ? { availableModels: undefined, availableModelsFetchedAt: undefined }
+                : {}),
+            }
+          })
         }
         const settings = normalizeSettings(merged)
         const shouldClearReusedProfile = st.reusedTaskApiProfileId && settings.activeProfileId === st.reusedTaskApiProfileId
@@ -1824,7 +1831,7 @@ function getFalRecoveryProfile(settings: AppSettings, task: TaskRecord) {
 
 function getCustomRecoveryProfile(settings: AppSettings, task: TaskRecord) {
   const provider = task.apiProvider
-  if (!provider || provider === 'openai' || provider === 'fal') return null
+  if (!provider || provider === 'fal') return null
   const taskProfile = getTaskApiProfile(settings, task)
   if (taskProfile?.provider === provider) return taskProfile
   return null
@@ -4056,6 +4063,7 @@ async function executeAgentRound(
     }) => {
       const result = await callImageApi({
         settings: imageRequestSettings,
+        requestId: opts.taskId,
         prompt: replaceImageMentionsForApi(opts.prompt, opts.referenceImageDataUrls.length),
         params: opts.taskParams,
         inputImageDataUrls: opts.referenceImageDataUrls,
@@ -4072,6 +4080,7 @@ async function executeAgentRound(
           })
         },
         onCustomTaskEnqueued: (request) => {
+          clearOpenAIWatchdogTimer(opts.taskId)
           updateTaskInStore(opts.taskId, {
             customTaskId: request.taskId,
             customRecoverable: false,
@@ -4710,6 +4719,7 @@ async function executeTask(taskId: string) {
 
     const result = await callImageApi({
       settings: requestSettings,
+      requestId: taskId,
       prompt: replaceImageMentionsForApi(requestPrompt, inputDataUrls.length),
       params: task.params,
       inputImageDataUrls: inputDataUrls,
@@ -4723,6 +4733,7 @@ async function executeTask(taskId: string) {
         })
       },
       onCustomTaskEnqueued: (request) => {
+        clearOpenAIWatchdogTimer(taskId)
         customTaskInfo = request
         updateTaskInStore(taskId, {
           customTaskId: request.taskId,
@@ -5380,7 +5391,9 @@ async function recoverCustomTask(taskId: string) {
   if (!task || !task.customTaskId || task.status === 'done') return
 
   const profile = getCustomRecoveryProfile(settings, task)
-  const customProvider = task.apiProvider ? getCustomProviderDefinition(settings, task.apiProvider) : null
+  const customProvider = task.apiProvider === 'openai'
+    ? CHATGPT2API_ASYNC_PROVIDER
+    : task.apiProvider ? getCustomProviderDefinition(settings, task.apiProvider) : null
   if (!profile || !customProvider?.poll) {
     scheduleCustomRecovery(taskId)
     return
@@ -5655,4 +5668,3 @@ export async function addImageFromUrl(src: string): Promise<void> {
   cacheImage(id, dataUrl)
   useStore.getState().addInputImage({ id, dataUrl })
 }
-

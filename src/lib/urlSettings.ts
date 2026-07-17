@@ -7,19 +7,21 @@ import {
   findEquivalentApiProfile,
   isDefaultConfigOnlyEnabled,
   mergeImportedSettings,
+  normalizeApiRequestMode,
   normalizeSettings,
   normalizeStreamPartialImages,
 } from './apiProfiles'
 
-const URL_SETTING_KEYS = ['settings', 'apiUrl', 'apiKey', 'codexCli', 'apiMode', 'model', 'profileName', 'streamImages', 'streamPartialImages']
+const URL_SETTING_KEYS = ['settings', 'apiUrl', 'apiKey', 'codexCli', 'apiMode', 'requestMode', 'model', 'profileName', 'streamImages', 'streamPartialImages']
 
-function getProfileDedupKey(profile: Pick<AppSettings['profiles'][number], 'provider' | 'baseUrl' | 'apiKey' | 'model' | 'apiMode' | 'codexCli' | 'streamImages' | 'streamPartialImages'>) {
+function getProfileDedupKey(profile: Pick<AppSettings['profiles'][number], 'provider' | 'baseUrl' | 'apiKey' | 'model' | 'apiMode' | 'requestMode' | 'codexCli' | 'streamImages' | 'streamPartialImages'>) {
   return JSON.stringify([
     profile.provider,
     profile.baseUrl.trim().replace(/\/+$/, '').toLowerCase(),
     profile.apiKey.trim(),
     profile.model.trim(),
     profile.apiMode,
+    profile.requestMode,
     profile.codexCli === true,
     profile.streamImages === true,
     profile.streamPartialImages ?? 0,
@@ -108,6 +110,7 @@ function buildDefaultConfigOnlySettingsFromUrlParams(currentSettings: Partial<Ap
         if (matched.responseFormatB64Json === true) patch.responseFormatB64Json = true
         if (isOpenAI) {
           if (matched.apiMode === 'images' || matched.apiMode === 'responses') patch.apiMode = matched.apiMode
+          if (matched.requestMode === 'auto' || matched.requestMode === 'sync' || matched.requestMode === 'async') patch.requestMode = matched.requestMode
           if (typeof matched.codexCli === 'boolean') patch.codexCli = matched.codexCli
           if (typeof matched.streamImages === 'boolean') patch.streamImages = matched.streamImages
           if (matched.streamPartialImages !== undefined) patch.streamPartialImages = normalizeStreamPartialImages(matched.streamPartialImages)
@@ -127,10 +130,12 @@ function buildDefaultConfigOnlySettingsFromUrlParams(currentSettings: Partial<Ap
   if (modelParam !== null && modelParam.trim()) patch.model = modelParam.trim()
   if (isOpenAI) {
     const apiModeParam = searchParams.get('apiMode')
+    const requestModeParam = searchParams.get('requestMode')
     const codexCliParam = searchParams.get('codexCli')
     const streamImagesParam = searchParams.get('streamImages')
     const streamPartialImagesParam = searchParams.get('streamPartialImages')
     if (apiModeParam === 'images' || apiModeParam === 'responses') patch.apiMode = apiModeParam
+    if (requestModeParam !== null) patch.requestMode = normalizeApiRequestMode(requestModeParam)
     if (codexCliParam !== null) patch.codexCli = codexCliParam.trim().toLowerCase() === 'true'
     if (streamImagesParam !== null) patch.streamImages = streamImagesParam.trim().toLowerCase() === 'true'
     if (streamPartialImagesParam !== null) patch.streamPartialImages = normalizeStreamPartialImages(streamPartialImagesParam)
@@ -162,6 +167,7 @@ export function buildSettingsFromUrlParams(currentSettings: Partial<AppSettings>
   const apiKeyParam = searchParams.get('apiKey')
   const codexCliParam = searchParams.get('codexCli')
   const apiModeParam = searchParams.get('apiMode')
+  const requestModeParam = searchParams.get('requestMode')
   const modelParam = searchParams.get('model')
   const profileNameParam = searchParams.get('profileName')
   const profileName = profileNameParam?.trim() ?? ''
@@ -169,7 +175,7 @@ export function buildSettingsFromUrlParams(currentSettings: Partial<AppSettings>
   const streamPartialImagesParam = searchParams.get('streamPartialImages')
   const apiMode: ApiMode | undefined = apiModeParam === 'images' || apiModeParam === 'responses' ? apiModeParam : undefined
 
-  const hasLegacyOpenAIParams = apiUrlParam !== null || apiKeyParam !== null || codexCliParam !== null || apiMode !== undefined || modelParam !== null || profileNameParam !== null || streamImagesParam !== null || streamPartialImagesParam !== null
+  const hasLegacyOpenAIParams = apiUrlParam !== null || apiKeyParam !== null || codexCliParam !== null || apiMode !== undefined || requestModeParam !== null || modelParam !== null || profileNameParam !== null || streamImagesParam !== null || streamPartialImagesParam !== null
   const settings = importedSettings == null
     ? normalizeSettings(currentSettings)
     : activateFirstImportedProfile(mergeImportedSettings(currentSettings, importedSettings), importedSettings)
@@ -187,6 +193,7 @@ export function buildSettingsFromUrlParams(currentSettings: Partial<AppSettings>
     if (modelParam !== null && modelParam.trim()) profile.model = modelParam.trim()
     if (profileName) profile.name = profileName
     if (codexCliParam !== null) profile.codexCli = codexCliParam.trim().toLowerCase() === 'true'
+    if (requestModeParam !== null) profile.requestMode = normalizeApiRequestMode(requestModeParam)
     if (streamImagesParam !== null) profile.streamImages = streamImagesParam.trim().toLowerCase() === 'true'
     if (streamPartialImagesParam !== null) profile.streamPartialImages = normalizeStreamPartialImages(streamPartialImagesParam)
 
